@@ -34,11 +34,103 @@ async function initializeDatabase() {
 
 // ============ HEALTH CHECK ============
 
+app.get("/", (req: Request, res: Response) => {
+  res.json({
+    name: "Lead Qualifier Pro API",
+    version: "1.0.0",
+    status: "running",
+    timestamp: new Date().toISOString(),
+    endpoints: {
+      health: "/health",
+      test: "/api/test",
+      documentation: "/api/docs",
+      clientProfile: "GET /api/clients/me (requires X-API-Key)",
+      leads: "GET /api/leads (requires X-API-Key)",
+      leadDetail: "GET /api/leads/:leadId (requires X-API-Key)",
+      updateLead: "PATCH /api/leads/:leadId (requires X-API-Key)",
+      analytics: "GET /api/analytics/summary (requires X-API-Key)",
+      emailLogs: "GET /api/analytics/email-logs (requires X-API-Key)",
+    },
+  });
+});
+
 app.get("/health", (req: Request, res: Response) => {
   res.json({
     status: "ok",
     timestamp: new Date().toISOString(),
     environment: process.env.NODE_ENV || "production",
+  });
+});
+
+app.get("/api/docs", (req: Request, res: Response) => {
+  res.json({
+    name: "Lead Qualifier Pro API",
+    version: "1.0.0",
+    description: "AI-powered lead qualification and follow-up SaaS system",
+    baseUrl: process.env.API_URL || "https://lead-qualifier-agent-production-dabf.up.railway.app",
+    authentication: "All endpoints (except /health, /, /api/test) require X-API-Key header",
+    endpoints: [
+      {
+        method: "GET",
+        path: "/",
+        description: "API root - returns available endpoints",
+        authentication: false,
+      },
+      {
+        method: "GET",
+        path: "/health",
+        description: "Health check endpoint",
+        authentication: false,
+      },
+      {
+        method: "GET",
+        path: "/api/test",
+        description: "Test endpoint",
+        authentication: false,
+      },
+      {
+        method: "GET",
+        path: "/api/docs",
+        description: "API documentation",
+        authentication: false,
+      },
+      {
+        method: "GET",
+        path: "/api/clients/me",
+        description: "Get current client profile",
+        authentication: true,
+      },
+      {
+        method: "GET",
+        path: "/api/leads",
+        description: "Get all leads for client",
+        authentication: true,
+      },
+      {
+        method: "GET",
+        path: "/api/leads/:leadId",
+        description: "Get specific lead with follow-ups",
+        authentication: true,
+      },
+      {
+        method: "PATCH",
+        path: "/api/leads/:leadId",
+        description: "Update lead status, notes, qualification, or score",
+        authentication: true,
+      },
+      {
+        method: "GET",
+        path: "/api/analytics/summary",
+        description: "Get analytics summary for client",
+        authentication: true,
+      },
+      {
+        method: "GET",
+        path: "/api/analytics/email-logs",
+        description: "Get email logs for client",
+        authentication: true,
+      },
+    ],
   });
 });
 
