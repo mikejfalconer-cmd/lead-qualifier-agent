@@ -1,48 +1,55 @@
-import express from "express";
+import express, { Express, Request, Response } from "express";
 import cors from "cors";
 import dotenv from "dotenv";
 
-// Use compiled dist files instead of src
-const initializeDatabase = require("../dist/src/db/index").initializeDatabase;
-const queries = require("../dist/src/db/queries");
-const followUpRouter = require("../dist/src/routes/followUp").default;
-
 dotenv.config();
 
-const app = express();
+const app: Express = express();
 
 // Middleware
 app.use(cors());
 app.use(express.json());
 
-// Initialize database on first request
-let dbInitialized = false;
+// Initialize database connection
+let db: any = null;
 
-async function ensureDbInitialized() {
-  if (!dbInitialized) {
-    try {
-      await initializeDatabase();
-      dbInitialized = true;
-      console.log("[API] Database initialized");
-    } catch (error) {
-      console.error("[API] Database initialization error:", error);
-      throw error;
-    }
+async function initializeDatabase() {
+  if (db) return db;
+
+  try {
+    const postgres = require("postgres");
+    const sql = postgres(process.env.DATABASE_URL || "", {
+      ssl: "require",
+    });
+    db = sql;
+    console.log("[API] Database connected");
+    return sql;
+  } catch (error) {
+    console.error("[API] Database connection failed:", error);
+    throw error;
   }
 }
 
-// Middleware to ensure DB is initialized
-app.use(async (req, res, next) => {
-  try {
-    await ensureDbInitialized();
-    next();
-  } catch (error) {
-    res.status(500).json({ error: "Database connection failed" });
-  }
+// ============ HEALTH CHECK ============
+
+app.get("/health", (req: Request, res: Response) => {
+  res.json({
+    status: "ok",
+    timestamp: new Date().toISOString(),
+    environment: process.env.NODE_ENV || "production",
+  });
 });
 
-// Authentication middleware
-function authenticateClient(req: any, res: any, next: any): void {
+app.get("/api/test", (req: Request, res: Response) => {
+  res.json({
+    message: "Lead Qualifier Pro API is running!",
+    timestamp: new Date().toISOString(),
+  });
+});
+
+// ============ AUTHENTICATION MIDDLEWARE ============
+
+function authenticateClient(req: any, res: Response, next: any): void {
   const apiKey = req.headers["x-api-key"] as string;
 
   if (!apiKey) {
@@ -54,33 +61,32 @@ function authenticateClient(req: any, res: any, next: any): void {
   next();
 }
 
-// ============ HEALTH CHECK ============
-
-app.get("/health", (req, res) => {
-  res.json({
-    status: "ok",
-    timestamp: new Date().toISOString(),
-    environment: process.env.NODE_ENV || "development",
-  });
-});
-
 // ============ CLIENT ENDPOINTS ============
 
-app.get("/api/clients/me", authenticateClient, async (req: any, res: any) => {
+app.get("/api/clients/me", authenticateClient, async (req: any, res: Response) => {
   try {
-    const client = await queries.getClientByApiKey(req.apiKey);
+    const sql = await initializeDatabase();
 
-    if (!client) {
+    // Query client by API key
+    const result = await sql`
+      SELECT id, name, email, forwarding_email, subscription_status, created_at
+      FROM clients
+      WHERE api_key = ${req.apiKey}
+      LIMIT 1
+    `;
+
+    if (result.length === 0) {
       return res.status(404).json({ error: "Client not found" });
     }
 
+    const client = result[0];
     res.json({
       id: client.id,
       name: client.name,
       email: client.email,
-      forwardingEmail: client.forwardingEmail,
-      subscriptionStatus: client.subscriptionStatus,
-      createdAt: client.createdAt,
+      forwardingEmail: client.forwarding_email,
+      subscriptionStatus: client.subscription_status,
+      createdAt: client.created_at,
     });
   } catch (error) {
     console.error("Error fetching client:", error);
@@ -90,113 +96,186 @@ app.get("/api/clients/me", authenticateClient, async (req: any, res: any) => {
 
 // ============ LEAD ENDPOINTS ============
 
-app.get("/api/leads", authenticateClient, async (req: any, res: any) => {
+app.get("/api/leads", authenticateClient, async (req: any, res: Response) => {
   try {
-    const client = await queries.getClientByApiKey(req.apiKey);
+    const sql = await initializeDatabase();
 
-    if (!client) {
+    // Get client
+    const clientResult = await sql`
+      SELECT id FROM clients WHERE api_key = ${req.apiKey} LIMIT 1
+    `;
+
+    if (clientResult.length === 0) {
       return res.status(404).json({ error: "Client not found" });
     }
 
-    const qualification = (req.query.qualification as string) || undefined;
-    const status = (req.query.status as string) || undefined;
+    const clientId = clientResult[0].id;
 
-    const clientLeads = await queries.getLeadsByClientId(client.id, {
-      qualification,
-      status,
-    });
+    // Get leads
+    const leads = await sql`
+      SELECT * FROM leads WHERE client_id = ${clientId} ORDER BY created_at DESC
+    `;
 
-    res.json(clientLeads);
+    res.json(leads);
   } catch (error) {
     console.error("Error fetching leads:", error);
     res.status(500).json({ error: "Internal server error" });
   }
 });
 
-app.get("/api/leads/:leadId", authenticateClient, async (req: any, res: any) => {
+app.get("/api/leads/:leadId", authenticateClient, async (req: any, res: Response) => {
   try {
-    const client = await queries.getClientByApiKey(req.apiKey);
+    const sql = await initializeDatabase();
 
-    if (!client) {
+    // Get client
+    const clientResult = await sql`
+      SELECT id FROM clients WHERE api_key = ${req.apiKey} LIMIT 1
+    `;
+
+    if (clientResult.length === 0) {
       return res.status(404).json({ error: "Client not found" });
     }
 
-    const lead = await queries.getLeadById(parseInt(req.params.leadId));
+    const clientId = clientResult[0].id;
+    const leadId = parseInt(req.params.leadId);
 
-    if (!lead || lead.clientId !== client.id) {
+    // Get lead
+    const leads = await sql`
+      SELECT * FROM leads WHERE id = ${leadId} AND client_id = ${clientId}
+    `;
+
+    if (leads.length === 0) {
       return res.status(404).json({ error: "Lead not found" });
     }
 
-    res.json(lead);
+    // Get follow-ups
+    const followUps = await sql`
+      SELECT * FROM follow_ups WHERE lead_id = ${leadId} ORDER BY sent_at DESC
+    `;
+
+    res.json({
+      ...leads[0],
+      followUps,
+    });
   } catch (error) {
     console.error("Error fetching lead:", error);
     res.status(500).json({ error: "Internal server error" });
   }
 });
 
-app.patch("/api/leads/:leadId", authenticateClient, async (req: any, res: any) => {
+app.patch("/api/leads/:leadId", authenticateClient, async (req: any, res: Response) => {
   try {
-    const client = await queries.getClientByApiKey(req.apiKey);
+    const sql = await initializeDatabase();
 
-    if (!client) {
+    // Get client
+    const clientResult = await sql`
+      SELECT id FROM clients WHERE api_key = ${req.apiKey} LIMIT 1
+    `;
+
+    if (clientResult.length === 0) {
       return res.status(404).json({ error: "Client not found" });
     }
 
-    const lead = await queries.getLeadById(parseInt(req.params.leadId));
+    const clientId = clientResult[0].id;
+    const leadId = parseInt(req.params.leadId);
+    const { status, notes, qualification, score } = req.body;
 
-    if (!lead || lead.clientId !== client.id) {
+    // Update lead
+    const updated = await sql`
+      UPDATE leads 
+      SET 
+        status = COALESCE(${status}, status),
+        notes = COALESCE(${notes}, notes),
+        qualification = COALESCE(${qualification}, qualification),
+        score = COALESCE(${score}, score),
+        updated_at = NOW()
+      WHERE id = ${leadId} AND client_id = ${clientId}
+      RETURNING *
+    `;
+
+    if (updated.length === 0) {
       return res.status(404).json({ error: "Lead not found" });
     }
 
-    const { status, notes, qualification, score } = req.body;
-
-    const updated = await queries.updateLead(lead.id, {
-      status: status || lead.status,
-      notes: notes || lead.notes,
-      qualification: qualification || lead.qualification,
-      score: score !== undefined ? score : lead.score,
-    });
-
-    res.json(updated);
+    res.json(updated[0]);
   } catch (error) {
     console.error("Error updating lead:", error);
     res.status(500).json({ error: "Internal server error" });
   }
 });
 
-// ============ FOLLOW-UP ENDPOINTS ============
-
-app.use("/api", followUpRouter);
-
 // ============ ANALYTICS ENDPOINTS ============
 
-app.get("/api/analytics/summary", authenticateClient, async (req: any, res: any) => {
+app.get("/api/analytics/summary", authenticateClient, async (req: any, res: Response) => {
   try {
-    const client = await queries.getClientByApiKey(req.apiKey);
+    const sql = await initializeDatabase();
 
-    if (!client) {
+    // Get client
+    const clientResult = await sql`
+      SELECT id FROM clients WHERE api_key = ${req.apiKey} LIMIT 1
+    `;
+
+    if (clientResult.length === 0) {
       return res.status(404).json({ error: "Client not found" });
     }
 
-    const stats = await queries.getLeadStats(client.id);
+    const clientId = clientResult[0].id;
 
-    res.json(stats);
+    // Get statistics
+    const stats = await sql`
+      SELECT 
+        COUNT(*) as total_leads,
+        COUNT(CASE WHEN qualification = 'hot' THEN 1 END) as hot_leads,
+        COUNT(CASE WHEN qualification = 'warm' THEN 1 END) as warm_leads,
+        COUNT(CASE WHEN qualification = 'cold' THEN 1 END) as cold_leads,
+        COUNT(CASE WHEN status = 'converted' THEN 1 END) as converted_leads,
+        COUNT(CASE WHEN status = 'contacted' THEN 1 END) as contacted_leads,
+        COUNT(CASE WHEN status = 'lost' THEN 1 END) as lost_leads,
+        ROUND(AVG(score)::numeric, 2) as average_score
+      FROM leads
+      WHERE client_id = ${clientId}
+    `;
+
+    const result = stats[0];
+
+    res.json({
+      totalLeads: parseInt(result.total_leads),
+      hotLeads: parseInt(result.hot_leads),
+      warmLeads: parseInt(result.warm_leads),
+      coldLeads: parseInt(result.cold_leads),
+      convertedLeads: parseInt(result.converted_leads),
+      contactedLeads: parseInt(result.contacted_leads),
+      lostLeads: parseInt(result.lost_leads),
+      averageScore: parseFloat(result.average_score) || 0,
+    });
   } catch (error) {
     console.error("Error fetching analytics:", error);
     res.status(500).json({ error: "Internal server error" });
   }
 });
 
-app.get("/api/analytics/email-logs", authenticateClient, async (req: any, res: any) => {
+app.get("/api/analytics/email-logs", authenticateClient, async (req: any, res: Response) => {
   try {
-    const client = await queries.getClientByApiKey(req.apiKey);
+    const sql = await initializeDatabase();
 
-    if (!client) {
+    // Get client
+    const clientResult = await sql`
+      SELECT id FROM clients WHERE api_key = ${req.apiKey} LIMIT 1
+    `;
+
+    if (clientResult.length === 0) {
       return res.status(404).json({ error: "Client not found" });
     }
 
-    const type = (req.query.type as string) || undefined;
-    const logs = await queries.getEmailLogsByClientId(client.id, type);
+    const clientId = clientResult[0].id;
+
+    // Get email logs
+    const logs = await sql`
+      SELECT * FROM email_logs 
+      WHERE client_id = ${clientId}
+      ORDER BY timestamp DESC
+      LIMIT 100
+    `;
 
     res.json(logs);
   } catch (error) {
@@ -205,17 +284,24 @@ app.get("/api/analytics/email-logs", authenticateClient, async (req: any, res: a
   }
 });
 
-// ============ ERROR HANDLER ============
+// ============ ERROR HANDLING ============
 
-app.use((err: any, req: any, res: any, next: any) => {
-  console.error("Unhandled error:", err);
-  res.status(500).json({
-    error: "Internal server error",
-    message: err.message,
-  });
+app.use((req: Request, res: Response) => {
+  res.status(404).json({ error: "Not found" });
 });
 
-// Export as Vercel handler
-export default (req: any, res: any) => {
-  return app(req, res);
-};
+app.use((err: any, req: Request, res: Response, next: any) => {
+  console.error("Error:", err);
+  res.status(500).json({ error: "Internal server error" });
+});
+
+// ============ START SERVER ============
+
+const PORT = process.env.PORT || 3000;
+
+app.listen(PORT, () => {
+  console.log(`[API] Server running on port ${PORT}`);
+});
+
+// Export for Vercel
+export default app;
