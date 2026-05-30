@@ -1,4 +1,4 @@
-import express, { Express, Request, Response } from "express";
+import express, { Express, Request, Response, NextFunction } from "express";
 import cors from "cors";
 import dotenv from "dotenv";
 
@@ -51,7 +51,7 @@ app.get("/api/test", (req: Request, res: Response) => {
 
 // ============ AUTHENTICATION MIDDLEWARE ============
 
-function authenticateClient(req: any, res: Response, next: any): void {
+function authenticateClient(req: any, res: Response, next: NextFunction): void {
   const apiKey = req.headers["x-api-key"] as string;
 
   if (!apiKey) {
@@ -292,7 +292,7 @@ app.use((req: Request, res: Response) => {
   res.status(404).json({ error: "Not found" });
 });
 
-app.use((err: any, req: Request, res: Response, next: any) => {
+app.use((err: any, req: Request, res: Response, next: NextFunction) => {
   console.error("Error:", err);
   res.status(500).json({ error: "Internal server error" });
 });
@@ -301,9 +301,18 @@ app.use((err: any, req: Request, res: Response, next: any) => {
 
 const PORT = process.env.PORT || 3000;
 
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   console.log(`[API] Server running on port ${PORT}`);
 });
 
-// Export for Vercel
+// Graceful shutdown
+process.on("SIGTERM", () => {
+  console.log("[API] SIGTERM received, shutting down gracefully");
+  server.close(() => {
+    console.log("[API] Server closed");
+    process.exit(0);
+  });
+});
+
+// Export for Vercel (if needed)
 export default app;
