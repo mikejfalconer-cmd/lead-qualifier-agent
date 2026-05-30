@@ -92,13 +92,12 @@ export class EmailProcessor {
           console.log(`[EmailProcessor] Processing lead for client: ${client.name}`);
 
           // Create lead record
-          const qualification = await qualifyLead(
-            senderEmailOnly,
+          const qualification = await qualifyLead({
+            senderEmail: senderEmailOnly,
             senderName,
             subject,
-            text,
-            client.name
-          );
+            body: text,
+          });
 
           const leadResult = await db.insert(leads).values({
             clientId: client.id,
@@ -112,7 +111,7 @@ export class EmailProcessor {
             notes: `Problem: ${qualification.problemIdentified}\nFit: ${qualification.solutionFit}`,
           });
 
-          const leadId = (leadResult as any).insertId;
+          const leadId = leadResult.id;
 
           // Generate and send follow-up email
           if (client.email) {

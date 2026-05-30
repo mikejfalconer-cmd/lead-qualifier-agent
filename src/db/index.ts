@@ -1,5 +1,5 @@
-import { drizzle } from "drizzle-orm/mysql2/driver";
-import mysql from "mysql2/promise";
+import { drizzle } from "drizzle-orm/postgres-js";
+import postgres from "postgres";
 import * as schema from "./schema";
 
 let dbInstance: any = null;
@@ -7,16 +7,21 @@ let dbInstance: any = null;
 export async function initializeDatabase() {
   if (dbInstance) return dbInstance;
 
-  const connection = await mysql.createConnection({
-    host: process.env.DB_HOST || "localhost",
-    user: process.env.DB_USER || "root",
-    password: process.env.DB_PASSWORD || "",
-    database: process.env.DB_NAME || "lead_qualifier_pro",
+  const databaseUrl = process.env.DATABASE_URL;
+  
+  if (!databaseUrl) {
+    throw new Error("DATABASE_URL environment variable is not set");
+  }
+
+  // Create PostgreSQL connection
+  const client = postgres(databaseUrl, {
+    ssl: process.env.NODE_ENV === "production" ? "require" : false,
+    max: 10, // Connection pool size
   });
 
-  dbInstance = drizzle(connection, { schema, mode: "default" });
+  dbInstance = drizzle(client, { schema });
 
-  console.log("[Database] Connected successfully");
+  console.log("[Database] Connected to PostgreSQL successfully");
   return dbInstance;
 }
 

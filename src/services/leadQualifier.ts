@@ -1,5 +1,12 @@
 import Anthropic from "@anthropic-ai/sdk";
 
+interface LeadData {
+  senderEmail: string;
+  senderName?: string;
+  subject: string;
+  body: string;
+}
+
 interface QualificationResult {
   score: number; // 0-100
   qualification: "hot" | "warm" | "cold";
@@ -9,32 +16,25 @@ interface QualificationResult {
   budgetIndicators: string;
   timeline: string;
   decisionMaker: string;
+  followUpSuggestion: string;
 }
 
 const client = new Anthropic();
 
-export async function qualifyLead(
-  senderEmail: string,
-  senderName: string,
-  subject: string,
-  body: string,
-  clientBusiness: string
-): Promise<QualificationResult> {
+export async function qualifyLead(lead: LeadData): Promise<QualificationResult> {
   const prompt = `You are an expert sales lead qualifier. Analyze this inbound lead using Elon Musk's 5-step algorithm and provide a qualification score.
 
 LEAD INFORMATION:
-From: ${senderName} (${senderEmail})
-Subject: ${subject}
-Message: ${body}
-
-CLIENT BUSINESS: ${clientBusiness}
+From: ${lead.senderName || "Unknown"} (${lead.senderEmail})
+Subject: ${lead.subject}
+Message: ${lead.body}
 
 Apply the 5-step algorithm:
-1. PROBLEM IDENTIFICATION - What problem is the prospect facing?
-2. SOLUTION FIT - How well does our service solve their problem?
-3. BUDGET INDICATORS - What signals indicate budget availability?
-4. TIMELINE - When do they need a solution?
-5. DECISION-MAKER - Are they the decision maker?
+1. QUESTION THE REQUIREMENT - Is this a real opportunity? Is the need genuine?
+2. DELETE THE REQUIREMENT - Is this essential? Can we eliminate unnecessary steps?
+3. SIMPLIFY AND OPTIMIZE - Can we improve the process? Is there a better approach?
+4. ACCELERATE CYCLE TIME - Can we speed up the sales cycle? What's the urgency?
+5. AUTOMATE - Can we automate parts of the solution? Is this scalable?
 
 Respond in JSON format:
 {
@@ -45,15 +45,20 @@ Respond in JSON format:
   "solutionFit": "<how well we solve it>",
   "budgetIndicators": "<signals about budget>",
   "timeline": "<urgency and timeline>",
-  "decisionMaker": "<decision maker assessment>"
+  "decisionMaker": "<decision maker assessment>",
+  "followUpSuggestion": "<suggested follow-up approach>"
 }
 
 SCORING GUIDE:
-- 80-100: Hot (high intent, clear need, budget, timeline, decision-maker)
-- 50-79: Warm (some indicators present, needs nurturing)
-- 0-49: Cold (low signals, long-term prospect)`;
+- 80-100: Hot (high intent, clear need, budget signals, short timeline, decision-maker)
+- 50-79: Warm (some indicators present, potential fit, needs nurturing)
+- 0-49: Cold (low signals, generic inquiry, long-term prospect)
+
+Be thorough in your analysis.`;
 
   try {
+    console.log("[LeadQualifier] Analyzing lead from:", lead.senderEmail);
+
     const message = await client.messages.create({
       model: "claude-3-5-sonnet-20241022",
       max_tokens: 1024,
@@ -76,6 +81,10 @@ SCORING GUIDE:
 
     const result = JSON.parse(jsonMatch[0]) as QualificationResult;
 
+    console.log(
+      `[LeadQualifier] Lead qualified: ${result.qualification} (score: ${result.score})`
+    );
+
     return {
       score: Math.min(100, Math.max(0, result.score)),
       qualification: result.qualification,
@@ -85,9 +94,10 @@ SCORING GUIDE:
       budgetIndicators: result.budgetIndicators,
       timeline: result.timeline,
       decisionMaker: result.decisionMaker,
+      followUpSuggestion: result.followUpSuggestion,
     };
   } catch (error) {
-    console.error("Lead qualification error:", error);
+    console.error("[LeadQualifier] Error qualifying lead:", error);
     // Return a default cold lead on error
     return {
       score: 0,
@@ -98,7 +108,61 @@ SCORING GUIDE:
       budgetIndicators: "Unknown",
       timeline: "Unknown",
       decisionMaker: "Unknown",
+      followUpSuggestion: "Manual review recommended",
     };
+  }
+}
+
+export async function generateFollowUp(
+  lead: LeadData,
+  qualification: QualificationResult
+): Promise<string> {
+  try {
+    const followUpPrompt = `Based on the following lead information and qualification, generate a professional follow-up email.
+
+Lead Information:
+- From: ${lead.senderEmail}
+- Name: ${lead.senderName || "Prospect"}
+- Subject: ${lead.subject}
+- Original Message: ${lead.body}
+
+Qualification Result:
+- Score: ${qualification.score}/100
+- Type: ${qualification.qualification}
+- Problem: ${qualification.problemIdentified}
+- Timeline: ${qualification.timeline}
+
+Generate a professional follow-up email that:
+1. Acknowledges their specific inquiry
+2. Demonstrates understanding of their problem
+3. Provides immediate value
+4. Includes a clear, specific call-to-action
+5. Is personalized and not generic
+
+Keep it concise (under 200 words) and professional.`;
+
+    console.log("[LeadQualifier] Generating follow-up for:", lead.senderEmail);
+
+    const message = await client.messages.create({
+      model: "claude-3-5-sonnet-20241022",
+      max_tokens: 512,
+      messages: [
+        {
+          role: "user",
+          content: followUpPrompt,
+        },
+      ],
+    });
+
+    const followUpText =
+      message.content[0].type === "text" ? message.content[0].text : "";
+
+    console.log("[LeadQualifier] Follow-up generated successfully");
+
+    return followUpText;
+  } catch (error) {
+    console.error("[LeadQualifier] Error generating follow-up:", error);
+    throw error;
   }
 }
 

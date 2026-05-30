@@ -1,6 +1,9 @@
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
+import { initializeDatabase } from "../src/db/index";
+import * as queries from "../src/db/queries";
+import followUpRouter from "../src/routes/followUp";
 
 dotenv.config();
 
@@ -10,7 +13,47 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Health check endpoint
+// Initialize database on first request
+let dbInitialized = false;
+
+async function ensureDbInitialized() {
+  if (!dbInitialized) {
+    try {
+      await initializeDatabase();
+      dbInitialized = true;
+      console.log("[API] Database initialized");
+    } catch (error) {
+      console.error("[API] Database initialization error:", error);
+      throw error;
+    }
+  }
+}
+
+// Middleware to ensure DB is initialized
+app.use(async (req, res, next) => {
+  try {
+    await ensureDbInitialized();
+    next();
+  } catch (error) {
+    res.status(500).json({ error: "Database connection failed" });
+  }
+});
+
+// Authentication middleware
+function authenticateClient(req: any, res: any, next: any): void {
+  const apiKey = req.headers["x-api-key"] as string;
+
+  if (!apiKey) {
+    res.status(401).json({ error: "Missing API key" });
+    return;
+  }
+
+  req.apiKey = apiKey;
+  next();
+}
+
+// ============ HEALTH CHECK ============
+
 app.get("/health", (req, res) => {
   res.json({
     status: "ok",
@@ -19,73 +62,158 @@ app.get("/health", (req, res) => {
   });
 });
 
-// Simple test endpoint
-app.get("/api/test", (req, res) => {
-  res.json({
-    message: "Lead Qualifier Pro API is running!",
-    timestamp: new Date().toISOString(),
-  });
-});
+// ============ CLIENT ENDPOINTS ============
 
-// Database connection test
-app.get("/api/db-status", async (req, res) => {
+app.get("/api/clients/me", authenticateClient, async (req: any, res: any) => {
   try {
-    const dbUrl = process.env.DATABASE_URL;
-    if (!dbUrl) {
-      return res.status(500).json({
-        error: "DATABASE_URL not configured",
-      });
+    const client = await queries.getClientByApiKey(req.apiKey);
+
+    if (!client) {
+      return res.status(404).json({ error: "Client not found" });
     }
 
     res.json({
-      status: "configured",
-      database: dbUrl.includes("neon") ? "PostgreSQL (Neon)" : "Unknown",
-      timestamp: new Date().toISOString(),
+      id: client.id,
+      name: client.name,
+      email: client.email,
+      forwardingEmail: client.forwardingEmail,
+      subscriptionStatus: client.subscriptionStatus,
+      createdAt: client.createdAt,
     });
   } catch (error) {
-    res.status(500).json({
-      error: "Database check failed",
-      message: (error as Error).message,
+    console.error("Error fetching client:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// ============ LEAD ENDPOINTS ============
+
+app.get("/api/leads", authenticateClient, async (req: any, res: any) => {
+  try {
+    const client = await queries.getClientByApiKey(req.apiKey);
+
+    if (!client) {
+      return res.status(404).json({ error: "Client not found" });
+    }
+
+    const qualification = (req.query.qualification as string) || undefined;
+    const status = (req.query.status as string) || undefined;
+
+    const clientLeads = await queries.getLeadsByClientId(client.id, {
+      qualification,
+      status,
     });
+
+    res.json(clientLeads);
+  } catch (error) {
+    console.error("Error fetching leads:", error);
+    res.status(500).json({ error: "Internal server error" });
   }
 });
 
-// Placeholder client endpoints
-app.get("/api/clients/me", (req, res) => {
-  const apiKey = req.headers["x-api-key"];
-  if (!apiKey) {
-    return res.status(401).json({ error: "Missing API key" });
-  }
+app.get("/api/leads/:leadId", authenticateClient, async (req: any, res: any) => {
+  try {
+    const client = await queries.getClientByApiKey(req.apiKey);
 
-  res.json({
-    message: "Client endpoint - database integration coming soon",
-    apiKey: "***",
-  });
+    if (!client) {
+      return res.status(404).json({ error: "Client not found" });
+    }
+
+    const lead = await queries.getLeadById(parseInt(req.params.leadId));
+
+    if (!lead || lead.clientId !== client.id) {
+      return res.status(404).json({ error: "Lead not found" });
+    }
+
+    res.json(lead);
+  } catch (error) {
+    console.error("Error fetching lead:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
 });
 
-// Placeholder leads endpoints
-app.get("/api/leads", (req, res) => {
-  const apiKey = req.headers["x-api-key"];
-  if (!apiKey) {
-    return res.status(401).json({ error: "Missing API key" });
-  }
+app.patch("/api/leads/:leadId", authenticateClient, async (req: any, res: any) => {
+  try {
+    const client = await queries.getClientByApiKey(req.apiKey);
 
-  res.json({
-    leads: [],
-    message: "Leads endpoint - database integration coming soon",
-  });
+    if (!client) {
+      return res.status(404).json({ error: "Client not found" });
+    }
+
+    const lead = await queries.getLeadById(parseInt(req.params.leadId));
+
+    if (!lead || lead.clientId !== client.id) {
+      return res.status(404).json({ error: "Lead not found" });
+    }
+
+    const { status, notes, qualification, score } = req.body;
+
+    const updated = await queries.updateLead(lead.id, {
+      status: status || lead.status,
+      notes: notes || lead.notes,
+      qualification: qualification || lead.qualification,
+      score: score !== undefined ? score : lead.score,
+    });
+
+    res.json(updated);
+  } catch (error) {
+    console.error("Error updating lead:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
 });
 
-// Error handler
+// ============ FOLLOW-UP ENDPOINTS ============
+
+app.use("/api", followUpRouter);
+
+// ============ ANALYTICS ENDPOINTS ============
+
+app.get("/api/analytics/summary", authenticateClient, async (req: any, res: any) => {
+  try {
+    const client = await queries.getClientByApiKey(req.apiKey);
+
+    if (!client) {
+      return res.status(404).json({ error: "Client not found" });
+    }
+
+    const stats = await queries.getLeadStats(client.id);
+
+    res.json(stats);
+  } catch (error) {
+    console.error("Error fetching analytics:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+app.get("/api/analytics/email-logs", authenticateClient, async (req: any, res: any) => {
+  try {
+    const client = await queries.getClientByApiKey(req.apiKey);
+
+    if (!client) {
+      return res.status(404).json({ error: "Client not found" });
+    }
+
+    const type = (req.query.type as string) || undefined;
+    const logs = await queries.getEmailLogsByClientId(client.id, type);
+
+    res.json(logs);
+  } catch (error) {
+    console.error("Error fetching email logs:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// ============ ERROR HANDLER ============
+
 app.use((err: any, req: any, res: any, next: any) => {
-  console.error("Error:", err);
+  console.error("Unhandled error:", err);
   res.status(500).json({
     error: "Internal server error",
     message: err.message,
   });
 });
 
-// Export as Vercel handler - compatible with both serverless and traditional Node
+// Export as Vercel handler
 export default (req: any, res: any) => {
   return app(req, res);
 };
