@@ -1,9 +1,11 @@
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
-import { initializeDatabase } from "../src/db/index";
-import * as queries from "../src/db/queries";
-import followUpRouter from "../src/routes/followUp";
+
+// Use compiled dist files instead of src
+const initializeDatabase = require("../dist/src/db/index").initializeDatabase;
+const queries = require("../dist/src/db/queries");
+const followUpRouter = require("../dist/src/routes/followUp").default;
 
 dotenv.config();
 
