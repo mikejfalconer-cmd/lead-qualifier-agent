@@ -17,7 +17,9 @@ async function initializeDatabase() {
   if (db) return db;
 
   try {
-    const postgres = require("postgres");
+    // Dynamic import for postgres
+    const postgresModule = await import("postgres");
+    const postgres = postgresModule.default;
     const sql = postgres(process.env.DATABASE_URL || "", {
       ssl: "require",
     });
