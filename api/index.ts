@@ -1,4 +1,3 @@
-import { VercelRequest, VercelResponse } from "@vercel/node";
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
@@ -86,7 +85,7 @@ app.use((err: any, req: any, res: any, next: any) => {
   });
 });
 
-// Export as Vercel handler
-export default (req: VercelRequest, res: VercelResponse) => {
+// Export as Vercel handler - compatible with both serverless and traditional Node
+export default (req: any, res: any) => {
   return app(req, res);
 };
