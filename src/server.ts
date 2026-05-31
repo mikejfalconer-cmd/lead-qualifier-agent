@@ -6,6 +6,7 @@ import { startEmailProcessorLoop } from "./services/emailProcessor";
 import { clients, leads, followUps } from "./db/schema";
 import { eq, and } from "drizzle-orm";
 import Stripe from "stripe";
+import emailRoutes from "./routes/email";
 
 dotenv.config();
 
@@ -15,6 +16,9 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || "");
 // Middleware
 app.use(cors());
 app.use(express.json());
+
+// Email routes
+app.use("/api/email", emailRoutes);
 
 // Authentication middleware
 function authenticateClient(req: Request, res: Response, next: NextFunction): void {
@@ -28,6 +32,28 @@ function authenticateClient(req: Request, res: Response, next: NextFunction): vo
   (req as any).apiKey = apiKey;
   next();
 }
+
+// API root
+app.get("/", (req: Request, res: Response) => {
+  res.json({
+    name: "Lead Qualifier Pro API",
+    version: "1.0.0",
+    status: "running",
+    timestamp: new Date().toISOString(),
+    endpoints: {
+      health: "/health",
+      clients: "GET /api/clients/me (requires X-API-Key)",
+      leads: "GET /api/leads (requires X-API-Key)",
+      leadDetail: "GET /api/leads/:leadId (requires X-API-Key)",
+      updateLead: "PATCH /api/leads/:leadId (requires X-API-Key)",
+      analytics: "GET /api/analytics/summary (requires X-API-Key)",
+      emailReceive: "POST /api/email/receive",
+      emailAddress: "GET /api/email/address/:clientId",
+      emailVerify: "POST /api/email/verify",
+      emailLogs: "GET /api/email/logs/:clientId",
+    },
+  });
+});
 
 // Health check
 app.get("/health", (req: Request, res: Response) => {
