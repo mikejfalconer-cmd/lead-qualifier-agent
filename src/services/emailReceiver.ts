@@ -1,7 +1,21 @@
-import { db } from '../db/index';
-import { emailLogs, leads, clients } from '../db/schema';
-import { eq } from 'drizzle-orm';
+import postgres from 'postgres';
 import { extractLeadFromEmail, scoreLeadQuality } from './emailExtractor';
+
+let sqlClient: any = null;
+
+function getSqlClient() {
+  if (!sqlClient) {
+    const databaseUrl = process.env.DATABASE_URL;
+    if (!databaseUrl) {
+      throw new Error('DATABASE_URL environment variable is not set');
+    }
+    sqlClient = postgres(databaseUrl, {
+      ssl: 'require',
+      max: 10,
+    });
+  }
+  return sqlClient;
+}
 
 export interface IncomingEmail {
   from: string;
@@ -71,13 +85,21 @@ export async function processIncomingEmail(email: IncomingEmail) {
     }
 
     // Verify client exists
-    const client = await db
-      .select()
-      .from(clients)
-      .where(eq(clients.id, clientId))
-      .limit(1);
+    const sql = getSqlClient();
+    let clientResult;
+    try {
+      clientResult = await sql`
+        SELECT id, name, email, forwarding_email FROM clients WHERE id = ${clientId}
+      `;
+    } catch (dbError) {
+      console.error(`[Email] Database error fetching client:`, dbError);
+      return {
+        success: false,
+        error: 'Database error',
+      };
+    }
 
-    if (!client || client.length === 0) {
+    if (!clientResult || clientResult.length === 0) {
       console.error(`[Email] Client not found: ${clientId}`);
       return {
         success: false,
@@ -85,37 +107,25 @@ export async function processIncomingEmail(email: IncomingEmail) {
       };
     }
 
+    const client = clientResult[0];
+
     // Parse email to extract lead data
     const leadData = parseEmailToLead(email);
 
     // Create lead in database
-    const result = await db
-      .insert(leads)
-      .values({
-        clientId,
-        senderEmail: leadData.senderEmail,
-        senderName: leadData.senderName,
-        subject: leadData.subject,
-        body: leadData.body,
-        qualification: 'cold', // Default, will be updated by AI
-        status: 'new',
-      })
-      .returning();
+    const leadResult = await sql`
+      INSERT INTO leads (client_id, sender_email, sender_name, subject, body, qualification, status)
+      VALUES (${clientId}, ${leadData.senderEmail}, ${leadData.senderName}, ${leadData.subject}, ${leadData.body}, 'cold', 'new')
+      RETURNING id, client_id, sender_email, sender_name, subject, body, qualification, status, created_at
+    `;
 
-    const newLead = result[0];
+    const newLead = leadResult[0];
 
     // Log email
-    await db
-      .insert(emailLogs)
-      .values({
-        clientId,
-        type: 'inbound',
-        fromEmail: email.from,
-        toEmail: email.to,
-        subject: email.subject,
-        messageId: email.messageId,
-        status: 'sent',
-      });
+    await sql`
+      INSERT INTO email_logs (client_id, type, from_email, to_email, subject, message_id, status)
+      VALUES (${clientId}, 'inbound', ${email.from}, ${email.to}, ${email.subject}, ${email.messageId || null}, 'sent')
+    `;
 
     console.log(`[Email] Lead created: ${newLead.id} for client: ${clientId}`);
 
@@ -123,6 +133,8 @@ export async function processIncomingEmail(email: IncomingEmail) {
       success: true,
       leadId: newLead.id,
       clientId,
+      qualification: newLead.qualification,
+      status: newLead.status,
       message: 'Email processed successfully',
     };
   } catch (error) {
@@ -138,7 +150,7 @@ export async function processIncomingEmail(email: IncomingEmail) {
  * Get email receiving address for a client
  */
 export function getEmailReceivingAddress(clientId: number): string {
-  return `leads-${clientId}@leadqualifierpro.com`;
+  return `leads-${clientId}@leadqualifierpro.resend.dev`;
 }
 
 /**

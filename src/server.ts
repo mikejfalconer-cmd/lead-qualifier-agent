@@ -205,6 +205,40 @@ app.patch("/api/leads/:leadId", authenticateClient, async (req: Request, res: Re
   }
 });
 
+// TEST ENDPOINTS (Development only)
+
+// Create test client
+app.post("/api/test/create-client", async (req: Request, res: Response) => {
+  try {
+    const db = getDatabase();
+    const { name, email, forwardingEmail } = req.body;
+
+    if (!name || !email || !forwardingEmail) {
+      res.status(400).json({ error: "Missing required fields: name, email, forwardingEmail" });
+      return;
+    }
+
+    const result = await db
+      .insert(clients)
+      .values({
+        name,
+        email,
+        forwardingEmail,
+        apiKey: `test_key_${Math.random().toString(36).substr(2, 9)}`,
+      })
+      .returning();
+
+    res.json({
+      success: true,
+      client: result[0],
+      message: `Client created with ID: ${result[0].id}`,
+    });
+  } catch (error) {
+    console.error("Error creating test client:", error);
+    res.status(500).json({ error: error instanceof Error ? error.message : "Internal server error" });
+  }
+});
+
 // ANALYTICS ENDPOINTS
 
 // Get lead statistics
