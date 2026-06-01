@@ -2,6 +2,9 @@ import crypto from 'crypto';
 import { db } from '../db/index';
 import { clients } from '../db/schema';
 import { eq } from 'drizzle-orm';
+import { Resend } from 'resend';
+
+const resend = new Resend(process.env.RESEND_API_KEY);
 
 interface VerificationState {
   [key: string]: {
@@ -41,9 +44,34 @@ export async function sendVerificationEmail(
       verified: false,
     };
 
-    // In production, send actual email via Resend or similar
-    console.log(`[Verification] Code for ${senderEmail}: ${code}`);
-    console.log(`[Verification] Verification codes stored:`, verificationCodes);
+    // Send verification email via Resend
+    if (process.env.RESEND_API_KEY) {
+      try {
+        await resend.emails.send({
+          from: 'Lead Qualifier Pro <noreply@leadqualifierpro.com>',
+          to: senderEmail,
+          subject: 'Verify Your Email - Lead Qualifier Pro',
+          html: `
+            <h2>Email Verification Required</h2>
+            <p>Thank you for sending us a lead inquiry. To verify your email address, please use the following code:</p>
+            <h1 style="font-family: monospace; letter-spacing: 2px;">${code}</h1>
+            <p>This code will expire in 24 hours.</p>
+            <p>Reply to this email with the code to complete verification.</p>
+            <hr>
+            <p style="color: #666; font-size: 12px;">If you did not send this email, please ignore this message.</p>
+          `,
+        });
+        console.log(`[Verification] Verification email sent to ${senderEmail}`);
+      } catch (resendError) {
+        console.error('[Verification] Error sending via Resend:', resendError);
+        // Fall back to console logging if Resend fails
+        console.log(`[Verification] Code for ${senderEmail}: ${code}`);
+      }
+    } else {
+      // Development mode - just log the code
+      console.log(`[Verification] Code for ${senderEmail}: ${code}`);
+      console.log(`[Verification] Verification codes stored:`, verificationCodes);
+    }
 
     return true;
   } catch (error) {
