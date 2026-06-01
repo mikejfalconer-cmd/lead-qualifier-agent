@@ -11,7 +11,9 @@ import emailRoutes from "./routes/email";
 dotenv.config();
 
 const app = express();
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || "");
+const stripe = process.env.STRIPE_SECRET_KEY 
+  ? new Stripe(process.env.STRIPE_SECRET_KEY)
+  : null; // Stripe is optional for testing
 
 // Middleware
 app.use(cors());
@@ -246,6 +248,11 @@ app.get("/api/analytics/summary", authenticateClient, async (req: Request, res: 
 
 // STRIPE WEBHOOK
 app.post("/webhooks/stripe", express.raw({ type: "application/json" }), async (req, res) => {
+  if (!stripe) {
+    res.status(400).json({ error: "Stripe not configured" });
+    return;
+  }
+  
   const sig = req.headers["stripe-signature"] as string;
 
   try {
