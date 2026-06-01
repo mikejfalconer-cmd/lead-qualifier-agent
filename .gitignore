@@ -12,3 +12,41 @@ dist/
 *~
 .pnpm-debug.log
 pnpm-lock.yaml
+
+# ===== SECURITY: Prevent credential exposure =====
+# Database connection strings and credentials
+.env
+.env.local
+.env.*.local
+DATABASE_URL
+*.pem
+*.key
+
+# Generated database migration files with credentials
+fix-db.mjs
+migrate-db.mjs
+setup-db.mjs
+
+# Temporary files that might contain secrets
+*.tmp
+*.temp
+.DS_Store
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Node modules and package locks
+node_modules/
+pnpm-lock.yaml.bak
+
+# Build outputs
+dist/
+build/
+.next/
+
+# Logs
+*.log
+logs/
