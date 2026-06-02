@@ -73,7 +73,7 @@ router.post('/receive', async (req: Request, res: Response): Promise<void> => {
       text,
       html,
       messageId,
-    });
+    }, 1); // Default client ID for testing
 
     if (!result.success) {
       res.status(400).json(result);

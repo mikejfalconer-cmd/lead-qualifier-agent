@@ -83,15 +83,15 @@ function extractSenderName(email: string): string {
 export function parseEmailToLead(email: IncomingEmail) {
   const senderName = extractSenderName(email.from);
   const extractedLead = extractLeadFromEmail(email.subject, email.text, email.from, senderName);
-  const quality = scoreLeadQuality(extractedLead);
+  const score = scoreLeadQuality(extractedLead);
   
   return {
     senderEmail: email.from,
     senderName: senderName,
     subject: email.subject,
     body: email.text,
-    qualification: quality.qualification,
-    score: quality.score,
+    qualification: score > 70 ? 'hot' : score > 40 ? 'warm' : 'cold',
+    score: score,
   };
 }
 
