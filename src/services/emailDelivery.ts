@@ -92,7 +92,12 @@ async function logEmail(
       errorMessage: request.errorMessage,
     });
   } catch (error) {
-    console.error("Failed to log email:", error);
+    // Silently fail if email_logs table doesn't exist (it's optional for Phase 3)
+    if ((error as any)?.code === 'ER_NO_SUCH_TABLE') {
+      console.warn("Email logging table not available (optional)");
+    } else {
+      console.error("Failed to log email:", error);
+    }
   }
 }
 

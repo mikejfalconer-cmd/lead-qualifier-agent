@@ -35,7 +35,10 @@ router.post('/receive', async (req: Request, res: Response): Promise<void> => {
     }
 
     // Validate email addresses
-    if (!isValidEmailAddress(from) || !isValidEmailAddress(to)) {
+    const fromValid = isValidEmailAddress(from);
+    const toValid = isValidEmailAddress(to);
+    console.log('[DEBUG] Email validation:', { from, to, fromValid, toValid });
+    if (!fromValid || !toValid) {
       res.status(400).json({
         success: false,
         error: 'Invalid email address format',

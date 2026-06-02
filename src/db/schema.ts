@@ -17,11 +17,13 @@ export const clients = pgTable('clients', {
   stripeSubscriptionId: varchar('stripe_subscription_id', { length: 255 }),
   monthlyBudget: numeric('monthly_budget', { precision: 10, scale: 2 }),
   apiKey: varchar('api_key', { length: 255 }).unique(),
+  webhookToken: varchar('webhook_token', { length: 255 }).unique(),
   createdAt: timestamp('created_at').defaultNow(),
   updatedAt: timestamp('updated_at').defaultNow(),
 }, (table) => ({
   forwardingEmailIdx: index('forwarding_email_idx').on(table.forwardingEmail),
   stripeCustomerIdx: index('stripe_customer_idx').on(table.stripeCustomerId),
+  webhookTokenIdx: index('webhook_token_idx').on(table.webhookToken),
 }));
 
 export const leads = pgTable('leads', {
@@ -35,12 +37,16 @@ export const leads = pgTable('leads', {
   qualification: qualificationEnum('qualification').default('cold'),
   status: leadStatusEnum('status').default('new'),
   notes: text('notes'),
+  messageId: varchar('message_id', { length: 255 }),
+  isDuplicate: boolean('is_duplicate').default(false),
   createdAt: timestamp('created_at').defaultNow(),
   updatedAt: timestamp('updated_at').defaultNow(),
 }, (table) => ({
   clientIdIdx: index('leads_client_id_idx').on(table.clientId),
   qualificationIdx: index('leads_qualification_idx').on(table.qualification),
   statusIdx: index('leads_status_idx').on(table.status),
+  messageIdIdx: index('leads_message_id_idx').on(table.messageId),
+  senderEmailIdx: index('leads_sender_email_idx').on(table.senderEmail),
 }));
 
 export const followUps = pgTable('follow_ups', {

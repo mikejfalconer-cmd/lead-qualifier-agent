@@ -26,6 +26,7 @@
     "express": "^5.2.1",
     "imap": "^0.8.19",
     "mailparser": "^3.9.8",
+    "mysql2": "^3.22.4",
     "nodemailer": "^8.0.9",
     "postgres": "^3.4.9",
     "resend": "^6.12.4",

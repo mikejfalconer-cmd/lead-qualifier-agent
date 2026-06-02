@@ -86,10 +86,11 @@ Respond in JSON format:
     };
   } catch (error) {
     console.error("Follow-up generation error:", error);
-    // Return a default follow-up on error
+    // Return a default follow-up on error (fallback)
+    const defaultBody = `Hi ${request.senderName},\n\nThank you for reaching out about "${request.leadSubject}". We appreciate you getting in touch.\n\nWe're interested in learning more about your needs and how we can help. Let's schedule a time to discuss your requirements in detail.\n\nBest regards,\n${request.clientName}`;
     return {
       subject: `Re: ${request.leadSubject}`,
-      body: `Hi ${request.senderName},\n\nThank you for reaching out. We're interested in learning more about your needs and how we can help.\n\nBest regards,\n${request.clientName}`,
+      body: defaultBody,
     };
   }
 }

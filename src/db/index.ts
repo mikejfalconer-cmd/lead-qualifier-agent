@@ -1,5 +1,5 @@
-import { drizzle } from "drizzle-orm/postgres-js";
-import postgres from "postgres";
+import mysql from "mysql2/promise";
+import { drizzle } from "drizzle-orm/mysql2";
 import * as schema from "./schema";
 
 let dbInstance: any = null;
@@ -13,15 +13,26 @@ export async function initializeDatabase() {
     throw new Error("DATABASE_URL environment variable is not set");
   }
 
-  // Create PostgreSQL connection
-  const client = postgres(databaseUrl, {
-    ssl: process.env.NODE_ENV === "production" ? "require" : false,
-    max: 10, // Connection pool size
+  // Parse MySQL connection string - handle URL with SSL in query string
+  // Remove ?ssl=... from the URL before parsing
+  const cleanUrl = databaseUrl.split('?')[0];
+  const url = new URL(cleanUrl);
+  
+  const pool = mysql.createPool({
+    host: url.hostname,
+    port: parseInt(url.port || "3306"),
+    user: url.username,
+    password: url.password,
+    database: url.pathname.slice(1),
+    waitForConnections: true,
+    connectionLimit: 10,
+    queueLimit: 0,
+    ssl: { rejectUnauthorized: false }
   });
 
-  dbInstance = drizzle(client, { schema });
+  dbInstance = drizzle(pool, { schema, mode: "default" });
 
-  console.log("[Database] Connected to PostgreSQL successfully");
+  console.log("[Database] Connected to MySQL/TiDB successfully");
   return dbInstance;
 }
 

@@ -3,10 +3,15 @@ import cors from "cors";
 import dotenv from "dotenv";
 import { initializeDatabase, getDatabase } from "./db/index";
 import { startEmailProcessorLoop } from "./services/emailProcessor";
+import { startRetrainingScheduler } from "./services/retrainingScheduler";
 import { clients, leads, followUps } from "./db/schema";
 import { eq, and } from "drizzle-orm";
 import Stripe from "stripe";
 import emailRoutes from "./routes/email";
+import webhookRoutes from "./routes/webhooks";
+import dashboardRoutes from "./routes/dashboard";
+import selfImprovementRoutes from "./routes/selfImprovement";
+import authRoutes from "./routes/auth";
 
 dotenv.config();
 
@@ -21,6 +26,18 @@ app.use(express.json());
 
 // Email routes
 app.use("/api/email", emailRoutes);
+
+// Webhook routes (secure token-based endpoints)
+app.use("/api/webhooks", webhookRoutes);
+
+// Dashboard routes (client API)
+app.use("/api", dashboardRoutes);
+
+// Self-improvement routes
+app.use("/api/self-improvement", selfImprovementRoutes);
+
+// Authentication routes
+app.use("/api/auth", authRoutes);
 
 // Authentication middleware
 function authenticateClient(req: Request, res: Response, next: NextFunction): void {
@@ -321,6 +338,9 @@ async function start() {
 
     const processorInterval = parseInt(process.env.EMAIL_PROCESSOR_INTERVAL_MS || "300000");
     startEmailProcessorLoop(processorInterval);
+    
+    // Start model retraining scheduler (every 6 hours)
+    startRetrainingScheduler(6);
     console.log("[Server] Email processor started");
 
     const port = parseInt(process.env.PORT || "3000");

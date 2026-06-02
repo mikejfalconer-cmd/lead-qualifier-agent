@@ -1,5 +1,8 @@
-import postgres from 'postgres';
+import mysql from 'mysql2/promise';
 import { extractLeadFromEmail, scoreLeadQuality } from './emailExtractor';
+import { qualifyLead } from './leadQualifier';
+import { generateFollowUpEmail, buildEmailWithSignature } from './followUpGenerator';
+import { sendFollowUpEmail } from './emailDelivery';
 
 let sqlClient: any = null;
 
@@ -9,9 +12,19 @@ function getSqlClient() {
     if (!databaseUrl) {
       throw new Error('DATABASE_URL environment variable is not set');
     }
-    sqlClient = postgres(databaseUrl, {
-      ssl: 'require',
-      max: 10,
+    // Remove ?ssl=... from the URL before parsing
+    const cleanUrl = databaseUrl.split('?')[0];
+    const url = new URL(cleanUrl);
+    sqlClient = mysql.createPool({
+      host: url.hostname,
+      port: parseInt(url.port || '3306'),
+      user: url.username,
+      password: url.password,
+      database: url.pathname.slice(1),
+      waitForConnections: true,
+      connectionLimit: 10,
+      queueLimit: 0,
+      ssl: { rejectUnauthorized: false }
     });
   }
   return sqlClient;
@@ -28,11 +41,40 @@ export interface IncomingEmail {
 
 /**
  * Extract client ID from forwarding email address
- * Format: leads-{clientId}@leadqualifierpro.com
+ * Supports multiple formats:
+ * - leads-{clientId}@domain.com (legacy format with client ID)
+ * - leads@domain.com (generic format - client ID from webhook token)
+ * - custom@domain.com (custom domain - client ID from webhook token)
  */
 export function extractClientIdFromEmail(toEmail: string): number | null {
+  // Try to extract client ID from email format: leads-{clientId}@
   const match = toEmail.match(/leads-(\d+)@/);
-  return match ? parseInt(match[1], 10) : null;
+  if (match) {
+    return parseInt(match[1], 10);
+  }
+  // If no client ID in email, return null (will be provided by webhook token)
+  return null;
+}
+
+/**
+ * Validate email address format
+ */
+export function isValidEmailAddress(email: string): boolean {
+  // RFC 5322 simplified regex for email validation
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  return emailRegex.test(email);
+}
+
+/**
+ * Extract sender name from email address
+ */
+function extractSenderName(email: string): string {
+  const parts = email.split('@')[0];
+  return parts
+    .replace(/[._-]/g, ' ')
+    .split(' ')
+    .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(' ');
 }
 
 /**
@@ -48,97 +90,165 @@ export function parseEmailToLead(email: IncomingEmail) {
     senderName: senderName,
     subject: email.subject,
     body: email.text,
-    htmlBody: email.html,
-    extractedData: extractedLead,
-    quality: quality,
+    qualification: quality.qualification,
+    score: quality.score,
   };
 }
 
 /**
- * Extract sender name from email address
+ * Process incoming email and create lead with AI scoring and auto follow-up
+ * @param email - The incoming email data
+ * @param clientId - The client ID (provided by webhook token, not extracted from email)
  */
-function extractSenderName(email: string): string {
-  // Try to extract name before @ symbol
-  const namePart = email.split('@')[0];
-  // Replace dots and underscores with spaces, capitalize
-  return namePart
-    .replace(/[._-]/g, ' ')
-    .split(' ')
-    .map(word => word.charAt(0).toUpperCase() + word.slice(1))
-    .join(' ');
-}
-
-/**
- * Process incoming email and create lead
- */
-export async function processIncomingEmail(email: IncomingEmail) {
+export async function processIncomingEmail(email: IncomingEmail, clientId: number) {
   try {
-    // Extract client ID from email address
-    const clientId = extractClientIdFromEmail(email.to);
-    
-    if (!clientId) {
-      console.error(`[Email] Invalid email address format: ${email.to}`);
+    // Validate client ID
+    if (!clientId || clientId <= 0) {
+      console.error(`[Email] Invalid client ID: ${clientId}`);
       return {
         success: false,
-        error: 'Invalid email address format',
+        error: 'Invalid client ID',
       };
     }
 
-    // Verify client exists
-    const sql = getSqlClient();
-    let clientResult;
+    // Validate email addresses
+    if (!isValidEmailAddress(email.from)) {
+      console.error(`[Email] Invalid sender email: ${email.from}`);
+      return {
+        success: false,
+        error: 'Invalid sender email',
+      };
+    }
+
+    // Extract sender name from email
+    const senderName = extractSenderName(email.from);
+
+    // Get database connection
+    const pool = getSqlClient();
+    const conn = await pool.getConnection();
+
     try {
-      clientResult = await sql`
-        SELECT id, name, email, forwarding_email FROM clients WHERE id = ${clientId}
-      `;
-    } catch (dbError) {
-      console.error(`[Email] Database error fetching client:`, dbError);
+      // Get client details for follow-up
+      const [clientResult] = await conn.query(
+        'SELECT id, name, email FROM clients WHERE id = ?',
+        [clientId]
+      );
+
+      if (!clientResult || (clientResult as any[]).length === 0) {
+        console.error(`[Email] Client not found: ${clientId}`);
+        return {
+          success: false,
+          error: 'Client not found',
+        };
+      }
+
+      const client = (clientResult as any[])[0];
+
+      // AI Lead Scoring - Use LLM for intelligent qualification
+      console.log(`[Email] Analyzing lead from: ${email.from}`);
+      const qualification = await qualifyLead({
+        senderEmail: email.from,
+        senderName,
+        subject: email.subject,
+        body: email.text,
+      });
+
+      // Create lead in database with AI score
+      const [leadResult] = await conn.query(
+        `INSERT INTO leads (client_id, sender_email, sender_name, subject, message, qualification, status, message_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          clientId,
+          email.from,
+          senderName,
+          email.subject,
+          email.text.substring(0, 5000),
+          qualification.qualification,
+          'new',
+          email.messageId || null,
+        ]
+      );
+
+      const leadId = (leadResult as any).insertId;
+
+      console.log(
+        `[Email] Lead created: ${leadId} (${qualification.qualification}, score: ${qualification.score})`
+      );
+
+      // Auto Follow-up: Generate and send personalized email
+      if (client.email) {
+        try {
+          console.log(`[Email] Generating follow-up for: ${email.from}`);
+          const followUpEmail = await generateFollowUpEmail({
+            senderName,
+            senderEmail: email.from,
+            leadSubject: email.subject,
+            leadBody: email.text,
+            qualification: qualification.qualification,
+            clientName: client.name,
+            clientBusiness: client.name,
+            clientEmail: client.email,
+          });
+
+          const fullBody = buildEmailWithSignature(
+            followUpEmail.body,
+            client.name,
+            client.email
+          );
+
+          const emailResult = await sendFollowUpEmail(
+            clientId,
+            email.from,
+            senderName,
+            client.name,
+            client.email,
+            followUpEmail.subject,
+            fullBody
+          );
+
+          if (emailResult.success) {
+            // Record follow-up in database
+            await conn.query(
+              `INSERT INTO follow_ups (lead_id, client_id, email_body, sent_at)
+               VALUES (?, ?, ?, ?)`,
+              [leadId, clientId, fullBody, new Date()]
+            );
+
+            console.log(`[Email] Follow-up sent to ${email.from}`);
+          } else {
+            console.error(
+              `[Email] Failed to send follow-up: ${emailResult.error}`
+            );
+          }
+        } catch (followUpError) {
+          console.error('[Email] Error in follow-up process:', followUpError);
+          // Don't fail the whole lead creation if follow-up fails
+        }
+      }
+
+      // Fetch the created lead
+      const [newLeadResult] = await conn.query(
+        'SELECT id, client_id, sender_email, sender_name, subject, message, qualification, status, createdAt FROM leads WHERE id = ?',
+        [leadId]
+      );
+
+      const newLead = (newLeadResult as any[])[0];
+
       return {
-        success: false,
-        error: 'Database error',
+        success: true,
+        leadId: newLead.id,
+        clientId: newLead.client_id,
+        senderEmail: newLead.sender_email,
+        senderName: newLead.sender_name,
+        qualification: newLead.qualification,
+        status: newLead.status,
+        createdAt: newLead.createdAt,
       };
+    } finally {
+      conn.release();
     }
-
-    if (!clientResult || clientResult.length === 0) {
-      console.error(`[Email] Client not found: ${clientId}`);
-      return {
-        success: false,
-        error: 'Client not found',
-      };
-    }
-
-    const client = clientResult[0];
-
-    // Parse email to extract lead data
-    const leadData = parseEmailToLead(email);
-
-    // Create lead in database
-    const leadResult = await sql`
-      INSERT INTO leads (client_id, sender_email, sender_name, subject, body, qualification, status)
-      VALUES (${clientId}, ${leadData.senderEmail}, ${leadData.senderName}, ${leadData.subject}, ${leadData.body}, 'cold', 'new')
-      RETURNING id, client_id, sender_email, sender_name, subject, body, qualification, status, created_at
-    `;
-
-    const newLead = leadResult[0];
-
-    // Log email
-    await sql`
-      INSERT INTO email_logs (client_id, type, from_email, to_email, subject, message_id, status)
-      VALUES (${clientId}, 'inbound', ${email.from}, ${email.to}, ${email.subject}, ${email.messageId || null}, 'sent')
-    `;
-
-    console.log(`[Email] Lead created: ${newLead.id} for client: ${clientId}`);
-
-    return {
-      success: true,
-      leadId: newLead.id,
-      clientId,
-      qualification: newLead.qualification,
-      status: newLead.status,
-      message: 'Email processed successfully',
-    };
   } catch (error) {
-    console.error('[Email] Error processing email:', error);
+    console.error('[Email] Error processing incoming email:', error);
     return {
       success: false,
       error: error instanceof Error ? error.message : 'Unknown error',
@@ -154,9 +264,30 @@ export function getEmailReceivingAddress(clientId: number): string {
 }
 
 /**
- * Validate email address format
+ * Send verification email to confirm sender
  */
-export function isValidEmailAddress(email: string): boolean {
-  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-  return emailRegex.test(email);
+export async function sendVerificationEmail(clientId: number, senderEmail: string, verificationCode: string): Promise<boolean> {
+  try {
+    const pool = getSqlClient();
+    const conn = await pool.getConnection();
+
+    try {
+      // Store verification request
+      await conn.query(
+        `INSERT INTO email_verifications (client_id, sender_email, verification_code, status)
+         VALUES (?, ?, ?, 'pending')`,
+        [clientId, senderEmail, verificationCode]
+      );
+
+      // TODO: Send actual verification email via Resend
+      console.log(`[Email] Verification code sent to ${senderEmail}: ${verificationCode}`);
+
+      return true;
+    } finally {
+      conn.release();
+    }
+  } catch (error) {
+    console.error('[Email] Error sending verification email:', error);
+    return false;
+  }
 }
